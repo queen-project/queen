@@ -45,6 +45,11 @@ SIDE_FAVORED = (
     re.compile(r"(?i)<(WHITE|BLACK)>\s+is\s+(?:clearly\s+|much\s+)?better\b"),
     re.compile(r"(?i)(?:better|winning|decisive|advantage|favors?)\s+(?:for\s+)?<(WHITE|BLACK)>"),
 )
+# "<BLACK> is up approximately 2 pawns": the verb, not the number, carries the sign.
+SIDE_VERB = re.compile(
+    r"(?i)<(?P<side>WHITE|BLACK)>\s+is\s+(?:\w+\s+)?(?P<verb>up|ahead|better|winning|"
+    r"down|behind|worse|losing)\b[^.]*?(?P<num>\d+(?:\.\d+)?)\s*pawns?"
+)
 NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 MATE = re.compile(r"(?i)([-+])\s*M(?:ATE)?\s*(\d+)")
 
@@ -164,7 +169,8 @@ def parse_model_evaluation(
         flags=re.IGNORECASE,
     )
 
-    # POV heuristic: explicit perspective wins, then a named favored side, then White POV.
+    # POV heuristic: explicit perspective wins, then "<side> is up/down N pawns",
+    # then a named favored side, then White POV.
     perspective_match = EXPLICIT_POV.search(value)
     perspective = perspective_match.group(1).lower() if perspective_match else None
     equal = bool(re.search(r"(?i)\b(?:equal|balanced|drawish)\b", value))
@@ -177,7 +183,13 @@ def parse_model_evaluation(
                 break
     mate = MATE.search(value)
     number = NUMBER.search(value)
-    if mate:
+    verb = None if perspective or mate else SIDE_VERB.search(value)
+    if verb:
+        up = verb.group("verb").lower() in ("up", "ahead", "better", "winning")
+        raw_sign = 1 if up else -1
+        magnitude = float(verb.group("num"))
+        kind = "pawn"
+    elif mate:
         raw_sign = 1 if mate.group(1) == "+" else -1
         magnitude = float(int(mate.group(2)))
         kind = "mate"
@@ -192,6 +204,9 @@ def parse_model_evaluation(
     if perspective:
         white_sign = raw_sign if perspective == "white" else -raw_sign
         method = "explicit_perspective"
+    elif verb:
+        white_sign = raw_sign if verb.group("side").lower() == "white" else -raw_sign
+        method = "side_verb"
     elif favored:
         numeric_pov = favored if raw_sign >= 0 else (
             "black" if favored == "white" else "white"
